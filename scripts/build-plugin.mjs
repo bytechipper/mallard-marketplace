@@ -11,6 +11,11 @@
 //   --local-source <path>   use this local directory instead of cloning (dry-run only)
 //   --output-root <path>    write to this dir instead of ./dist/
 //   --skip-scan             skip the source scan (default: run it, include findings in receipt)
+//   --skip-if-current       no-op if an up-to-date build already exists in the
+//                           output dir (receipt's submission_sha256 matches the
+//                           current submission .toml and the artifacts are
+//                           present). Lets the publish workflow reuse a restored
+//                           dist/ cache and only rebuild changed/new submissions.
 
 import { readFile, mkdir, copyFile, rm, writeFile, stat } from "node:fs/promises";
 import { existsSync, createReadStream } from "node:fs";
@@ -176,12 +181,37 @@ async function main() {
     console.error(`build-plugin: submission not found: ${submissionPath}`);
     process.exit(2);
   }
-  const submission = toml.parse(await readFile(submissionPath, "utf8"));
+  const submissionRaw = await readFile(submissionPath, "utf8");
+  const submissionSha256 = createHash("sha256").update(submissionRaw).digest("hex");
+  const submission = toml.parse(submissionRaw);
   const src = submission.source;
   const sizeCap = submission.meta?.size_cap_override ?? DEFAULT_SIZE_CAP;
 
   const outputRoot = args.get("output-root") || join(REPO_ROOT, "dist");
   const outDir = join(outputRoot, id, version);
+
+  // Incremental fast-path: if a prior build for this exact submission is
+  // already present (e.g. restored from the publish workflow's dist/ cache),
+  // skip the clone+build entirely. The submission .toml pins repo+ref+build,
+  // so a matching submission_sha256 means the archive is reproducible and the
+  // existing artifacts are still valid.
+  if (args.has("skip-if-current")) {
+    const receiptPath = join(outDir, "build-receipt.json");
+    if (existsSync(receiptPath)) {
+      try {
+        const prior = JSON.parse(await readFile(receiptPath, "utf8"));
+        const archiveOk = prior.artifact && existsSync(join(outDir, prior.artifact));
+        const manifestOk = existsSync(join(outDir, "plugin.toml"));
+        if (prior.submission_sha256 === submissionSha256 && archiveOk && manifestOk) {
+          console.log(`build-plugin: SKIP ${id}@${version} (unchanged, reusing cached build)`);
+          return;
+        }
+      } catch {
+        // Corrupt/partial receipt — fall through and rebuild.
+      }
+    }
+  }
+
   if (existsSync(outDir)) {
     await rm(outDir, { recursive: true, force: true });
   }
@@ -239,6 +269,7 @@ async function main() {
   const receipt = {
     id,
     version,
+    submission_sha256: submissionSha256,
     artifact: archiveDestName,
     archive_sha256: archiveSha256,
     archive_size: archiveSize,
