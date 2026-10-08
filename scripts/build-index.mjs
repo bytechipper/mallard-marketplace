@@ -108,6 +108,8 @@ function permissionsSummary(manifest) {
     gmcp_access: Array.isArray(p.gmcp_access) ? p.gmcp_access : [],
     notifications: Boolean(p.notifications ?? false),
     keychain: Boolean(p.keychain ?? false),
+    database: Boolean(p.database ?? false),
+    log_access: Boolean(p.log_access ?? false),
     network: Array.isArray(p.network) ? p.network : [],
     filesystem: Array.isArray(p.filesystem) ? p.filesystem : [],
     clipboard: typeof p.clipboard === "string" ? p.clipboard : "none",
